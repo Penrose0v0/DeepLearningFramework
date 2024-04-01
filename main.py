@@ -8,12 +8,10 @@ import time
 from network import Net
 from loss import NetLoss
 from dataset import NetDataset
-from utils import draw_figure, convert_seconds
+from utils import setup_seed, draw_figure, convert_seconds
 
 # 3407 is all you need
-seed_value = 3407
-torch.manual_seed(seed_value)
-torch.cuda.manual_seed(seed_value)
+setup_seed(3407)
 
 def train(epoch_num, count=100):
     model.train()
@@ -63,7 +61,8 @@ if __name__ == "__main__":
     device = torch.device(
         "cuda:0" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
 
-    # Create an instance
+    # Create neural network
+    print(fmt.format("Create neural network"))
     model = Net()
 
     # Load pretrained model or create a new model
@@ -86,6 +85,7 @@ if __name__ == "__main__":
     print()
 
     # Start training
+    print(fmt.format("Start training") + '\n')
     min_loss = -1
     best_epoch = 0
     epoch_list, loss_list = [], []
@@ -104,10 +104,11 @@ if __name__ == "__main__":
             min_loss = current_loss
             best_epoch = epoch + 1
 
-        # Draw figure
+        # Draw figure and log
         epoch_list.append(epoch + 1)
         loss_list.append(current_loss)
         draw_figure(epoch_list, loss_list, "Loss", "./outputs/loss.png")
+        log(loss_list, f"logs/{very_start}.txt")
 
         # Elapsed time
         end = time.time()
