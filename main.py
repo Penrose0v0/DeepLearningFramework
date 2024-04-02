@@ -8,7 +8,7 @@ import time
 from network import Net
 from loss import NetLoss
 from dataset import NetDataset
-from utils import setup_seed, draw_figure, convert_seconds
+from utils import setup_seed, draw_figure, log, convert_seconds
 
 # 3407 is all you need
 setup_seed(3407)
