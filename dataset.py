@@ -22,8 +22,8 @@ class NetDataset(Dataset):
 
     @property
     def read_data(self):
+        print(f"Dataset Path: {self.folder}")
         files = os.listdir(self.folder)
-        print("Reading data... ", end='')
 
         data = []
         total = 0
@@ -32,6 +32,7 @@ class NetDataset(Dataset):
             # ...
             # ...
             total += 1
+            print(f"\rReading data... [{total} / {len(files)}] ", end='')
 
-        print(f"Complete! Total: {total}")
+        print("Completed! ")
         return data
