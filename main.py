@@ -20,7 +20,7 @@ def train(epoch_num, count=100):
     for batch_idx, data in enumerate(train_loader, 0):
         # Get data
         inputs = data
-        inputs.to(device)
+        inputs = inputs.to(device)
 
         optimizer.zero_grad()
 
@@ -64,13 +64,16 @@ if __name__ == "__main__":
     # Create neural network
     print(fmt.format("Create neural network"))
     model = Net()
+    device_count = torch.cuda.device_count()
+    print(f"Using {device_count} GPUs")
 
     # Load pretrained model or create a new model
     if model_path != '':
         print(f"Loading pretrained model: {model_path}")
-        model.load_state_dict(torch.load(model_path))
+        model.load_state_dict({k.replace('module.', ''): v for k, v in torch.load(model_path).items()})
     else:
         print("Creating new model")
+    model = nn.DataParallel(model)
     model.to(device)
     print()
 
@@ -90,6 +93,7 @@ if __name__ == "__main__":
     best_epoch = 0
     epoch_list, loss_list = [], []
     very_start = time.time()
+    formatted_time = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime(very_start))
     for epoch in range(epochs):
         start = time.time()
 
@@ -107,8 +111,8 @@ if __name__ == "__main__":
         # Draw figure and log
         epoch_list.append(epoch + 1)
         loss_list.append(current_loss)
-        draw_figure(epoch_list, loss_list, "Loss", "./outputs/loss.png")
-        log(loss_list, f"logs/{very_start}.txt")
+        draw_figure(epoch_list, loss_list, "Loss", f"./logs/{formatted_time}.png")
+        log(loss_list, f"logs/{formatted_time}.txt")
 
         # Elapsed time
         end = time.time()
