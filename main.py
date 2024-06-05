@@ -35,9 +35,13 @@ def train(epoch_num, count=100):
         running_loss += loss.item()
         total_loss += loss.item()
         if batch_idx % count == count - 1:
+            print('\r', end='')
             log('Batch %d\t loss: %.6f' % (batch_idx + 1, running_loss / count))
             running_loss = 0.0
+        else:
+            print(f"\r[{batch_idx % count + 1} / {count}]", end='')
         total += 1
+    print('\r', end='')
 
     return total_loss / total
 
