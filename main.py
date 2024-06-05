@@ -4,11 +4,12 @@ from torch.utils.data import DataLoader
 import torch.optim as optim
 import argparse
 import time
+import traceback
 
 from network import Net
 from loss import NetLoss
 from dataset import NetDataset
-from utils import setup_seed, draw_figure, log, convert_seconds
+from utils import Logger, setup_seed, draw_figure, convert_seconds
 
 # 3407 is all you need
 setup_seed(3407)
@@ -16,7 +17,7 @@ setup_seed(3407)
 def train(epoch_num, count=100):
     model.train()
     running_loss, total_loss, total = 0.0, 0.0, 1
-    print(f"< Epoch {epoch_num + 1} >")
+    log(f"< Epoch {epoch_num + 1} >")
     for batch_idx, data in enumerate(train_loader, 0):
         # Get data
         inputs = data
@@ -34,11 +35,12 @@ def train(epoch_num, count=100):
         running_loss += loss.item()
         total_loss += loss.item()
         if batch_idx % count == count - 1:
-            print('Batch %d\t loss: %.6f' % (batch_idx + 1, running_loss / count))
+            log('Batch %d\t loss: %.6f' % (batch_idx + 1, running_loss / count))
             running_loss = 0.0
         total += 1
 
     return total_loss / total
+
 
 if __name__ == "__main__":
     fmt = "----- {:^25} -----"
@@ -94,33 +96,38 @@ if __name__ == "__main__":
     epoch_list, loss_list = [], []
     very_start = time.time()
     formatted_time = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime(very_start))
-    for epoch in range(epochs):
-        start = time.time()
+    log = Logger(f"logs/{formatted_time}.txt")
 
-        # Train one epoch
-        current_loss = train(epoch)
+    try:
+        for epoch in range(epochs):
+            start = time.time()
 
-        # Save model
-        torch.save(model.state_dict(), f"./weights/current.pth")
-        if current_loss < min_loss or min_loss == -1:
-            torch.save(model.state_dict(), f"./weights/best.pth")
-            print("Update the best model")
-            min_loss = current_loss
-            best_epoch = epoch + 1
+            # Train one epoch
+            current_loss = train(epoch)
 
-        # Draw figure and log
-        epoch_list.append(epoch + 1)
-        loss_list.append(current_loss)
-        draw_figure(epoch_list, loss_list, "Loss", f"./logs/{formatted_time}.png")
-        log(loss_list, f"logs/{formatted_time}.txt")
+            # Save model
+            torch.save(model.state_dict(), f"./weights/current.pth")
+            if current_loss < min_loss or min_loss == -1:
+                torch.save(model.state_dict(), f"./weights/best.pth")
+                print("Update the best model")
+                min_loss = current_loss
+                best_epoch = epoch + 1
 
-        # Elapsed time
-        end = time.time()
-        use_time = int(end - start)
-        print(f"Elapsed time: {use_time // 60}m {use_time % 60}s\n")
+            # Draw figure and log
+            epoch_list.append(epoch + 1)
+            loss_list.append(current_loss)
+            draw_figure(epoch_list, loss_list, "Loss", f"./logs/{formatted_time}.png")
 
-    very_end = time.time()
-    total_time = int(very_end - very_start)
+            # Elapsed time
+            end = time.time()
+            use_time = int(end - start)
+            log(f"Elapsed time: {use_time // 60}m {use_time % 60}s\n")
 
-    print(f"Training finished! Total elapsed time: {convert_seconds(total_time)}, "
-          f"Best Epoch: {best_epoch}, Min Loss: {min_loss:.4f}")
+        very_end = time.time()
+        total_time = int(very_end - very_start)
+
+        log(f"Training finished! Total elapsed time: {convert_seconds(total_time)}, "
+            f"Best Epoch: {best_epoch}, Min Loss: {min_loss:.4f}")
+
+    except Exception as e:
+        log(traceback.format_exc())

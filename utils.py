@@ -3,7 +3,7 @@ import numpy as np
 import torch
 import random
 import os
-from datetime import datetime
+import time
 
 # General
 def setup_seed(seed=3407):
@@ -17,13 +17,21 @@ def setup_seed(seed=3407):
     torch.backends.cudnn.benchmark = False  # if benchmark=True, deterministic will be False
     torch.backends.cudnn.enabled = False
 
-def log(loss_list, log_file):
-    with open(log_file, 'w', encoding='utf-8') as file:
-        content = ''
-        for loss in loss_list:
-            content += f"{loss} "
-        content += f"\nRecorded on: {datetime.now()}\n"
-        file.write(content)
+class Logger:
+    def __init__(self, log_file):
+        self.content = ""
+        self.file = log_file
+
+    def __call__(self, text):
+        print(text)
+        self.content += text + '\n'
+
+        current_time = time.time()
+        formatted_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(current_time))
+
+        with open(self.file, 'w', encoding='utf-8') as file:
+            content = self.content + f"\nRecorded on: {formatted_time}\n"
+            file.write(content)
 
 def draw_figure(x, y, title, save_path):
     plt.plot(x, y)
