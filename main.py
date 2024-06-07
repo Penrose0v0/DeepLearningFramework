@@ -127,11 +127,14 @@ if __name__ == "__main__":
             use_time = int(end - start)
             log(f"Elapsed time: {use_time // 60}m {use_time % 60}s\n")
 
-        very_end = time.time()
-        total_time = int(very_end - very_start)
-
-        log(f"Training finished! Total elapsed time: {convert_seconds(total_time)}, "
-            f"Best Epoch: {best_epoch}, Min Loss: {min_loss:.4f}")
-
     except Exception as e:
         log(traceback.format_exc())
+
+    except KeyboardInterrupt:
+        print()
+
+    very_end = time.time()
+    total_time = int(very_end - very_start)
+
+    log(f"Training finished! Total elapsed time: {convert_seconds(total_time)}, "
+        f"Best Epoch: {best_epoch}, Min Loss: {min_loss:.4f}")

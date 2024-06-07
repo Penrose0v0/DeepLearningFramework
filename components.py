@@ -40,11 +40,14 @@ class UNet(nn.Module):
     def __init__(self, in_c, out_c, base_c=64, num=4):
         super().__init__()
         self.in_conv = DoubleConv(in_c, base_c)  # 3->64
-        self.down = [Down(base_c * (2 ** i), base_c * (2 ** (i + 1))) for i in range(num - 1)]
-        self.down.append(Down(base_c * (2 ** (num - 1)), base_c * (2 ** (num - 1))))
 
-        self.up = [Up(base_c * (2 ** (i + 1)), base_c * (2 ** (i - 1))) for i in range(num - 1, 0, -1)]
-        self.up.append(Up(base_c * 2, base_c))
+        down = [Down(base_c * (2 ** i), base_c * (2 ** (i + 1))) for i in range(num - 1)]
+        down.append(Down(base_c * (2 ** (num - 1)), base_c * (2 ** (num - 1))))
+        self.down = nn.ModuleList(down)
+
+        up = [Up(base_c * (2 ** (i + 1)), base_c * (2 ** (i - 1))) for i in range(num - 1, 0, -1)]
+        up.append(Up(base_c * 2, base_c))
+        self.up = nn.ModuleList(up)
 
         self.out_conv = nn.Conv2d(base_c, out_c, kernel_size=1)
 
