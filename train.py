@@ -79,7 +79,7 @@ if __name__ == "__main__":
         model.load_state_dict({k.replace('module.', ''): v for k, v in torch.load(model_path).items()})
     else:
         print("Creating new model")
-    model = nn.DataParallel(model)
+    model = nn.DataParallel(model, device_ids=[i for i in range(device_count)])
     model.to(device)
     print()
 
