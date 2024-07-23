@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import numpy as np
 
 """2D UNet"""
 class DoubleConv(nn.Sequential):
@@ -200,6 +201,110 @@ def resnet50(num_classes=1000, include_top=True):
 
 def resnet101(num_classes=1000, include_top=True):
     return ResNet(Bottleneck, [3, 4, 23, 3], num_classes=num_classes, include_top=include_top)
+
+
+"""Transformer"""
+def get_attn_pad_mask(seq_q, seq_k):
+    batch_size, len_q, _ = seq_q.size()
+    batch_size, len_k, _ = seq_k.size()
+    pad_attn_mask = seq_k.data.eq(0).unsqueeze(1)
+    return pad_attn_mask.expand(batch_size, len_q, len_k)
+
+def get_causal_mask(seq):
+    attn_shape = [seq.size(0), seq.size(1), seq.size(1)]
+    subsequence_mask = np.triu(np.ones(attn_shape), k=1)
+    subsequence_mask = torch.from_numpy(subsequence_mask).byte()
+    return subsequence_mask
+
+class MultiHeadAttention(nn.Module):
+    def __init__(self, embed_dim, d_k, d_v, num_heads):
+        super().__init__()
+        self.d_k = d_k
+        self.d_v = d_v
+        self.num_heads = num_heads
+
+        self.w_q = nn.Linear(embed_dim, d_k * num_heads, bias=False)
+        self.w_k = nn.Linear(embed_dim, d_k * num_heads, bias=False)
+        self.w_v = nn.Linear(embed_dim, d_v * num_heads, bias=False)
+        self.fc = nn.Linear(num_heads * d_v, embed_dim, bias=False)
+        self.dropout = nn.Dropout(p=0.1)
+        self.layer_norm = nn.LayerNorm(embed_dim)
+
+    def ScaledDotProductAttention(self, q, k, v, attn_mask=None):
+        """
+        Q: [batch_size, n_heads, len_q, d_k]
+        K: [batch_size, n_heads, len_k, d_k]
+        V: [batch_size, n_heads, len_v(=len_k), d_v]
+        attn_mask: [batch_size, n_heads, seq_len, seq_len]
+        """
+        scores = torch.matmul(q, k.transpose(-1, -2)) / np.sqrt(
+            self.d_k)  # scores : [batch_size, n_heads, len_q, len_k]
+        if attn_mask is not None:
+            attn_mask = attn_mask.unsqueeze(1).repeat(1, self.num_heads, 1, 1)
+            scores.masked_fill_(attn_mask.bool(), -1e9)  # Fills elements of self tensor with value where mask is True.
+        attn = nn.Softmax(dim=-1)(scores)
+        context = torch.matmul(attn, v)  # [batch_size, n_heads, len_q, d_v]
+        return context, attn
+
+    def forward(self, q, k, v, attn_mask=None):
+        """
+        input_Q: [batch_size, len_q, d_model]
+        input_K: [batch_size, len_k, d_model]
+        input_V: [batch_size, len_v(=len_k), d_model]
+        attn_mask: [batch_size, seq_len, seq_len]
+        """
+        residual, batch_size = q, q.shape[0]
+        q = self.w_q(q).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
+        k = self.w_k(k).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
+        v = self.w_v(v).view(batch_size, -1, self.num_heads, self.d_v).transpose(1, 2)
+
+        context, attn = self.ScaledDotProductAttention(q, k, v, attn_mask)
+        context = context.transpose(1, 2).reshape(batch_size, -1, self.num_heads * self.d_v)
+
+        output = self.dropout(self.fc(context))
+        output = self.layer_norm(output + residual)
+        return output, attn
+
+class PoswiseFeedForwardNet(nn.Module):
+    def __init__(self, embed_dim, d_ff):
+        super().__init__()
+        self.fc = nn.Sequential(
+            nn.Linear(embed_dim, d_ff, bias=False),
+            nn.ReLU(),
+            nn.Linear(d_ff, embed_dim, bias=False))
+        self.dropout = nn.Dropout(p=0.1)
+        self.layer_norm = nn.LayerNorm(embed_dim)
+
+    def forward(self, x):
+        residual = x
+        output = self.dropout(self.fc(x))
+        return self.layer_norm(output + residual)
+
+
+class EncoderLayer(nn.Module):
+    def __init__(self, d_model, d_k, d_v, num_heads, d_ff):
+        super().__init__()
+        self.attention = MultiHeadAttention(d_model, d_k, d_v, num_heads)
+        self.ffn = PoswiseFeedForwardNet(d_model, d_ff)
+
+    def forward(self, x, attn_mask=None):
+        y, attn = self.attention(x, x, x, attn_mask)
+        y = self.ffn(y)
+        return y, attn
+
+class Encoder(nn.Module):
+    def __init__(self, num_layers, d_model, d_k, d_v, d_ff, num_heads):
+        super().__init__()
+        self.layers = nn.ModuleList([EncoderLayer(d_model, d_k, d_v, num_heads, d_ff) for _ in range(num_layers)])
+
+    def forward(self, x):
+        # x = ... x positional embedding
+        attn_mask = get_attn_pad_mask(x, x).to(x.device)
+        attn_list = []
+        for layer in self.layers:
+            x, attn = layer(x, attn_mask)
+            attn_list.append(attn)
+        return x, attn_list
 
 
 if __name__ == "__main__":
