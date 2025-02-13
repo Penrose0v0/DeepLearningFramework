@@ -6,9 +6,18 @@ My purpose in creating this repo is to enable better and faster initiation of de
 
 # Getting Started
 
-Basically, just run this command first: 
+If you use docker, run: 
+```
+$ docker pull penrose0v0/dl_normal:latest
+$ docker run --gpus all -it --net=host --shm-size=16gb --name -v /{data_dir}:/root/share --name {container_name} penrose0v0/dl_normal:latest
+```
 
-```pip install -r requirements.txt```
+Next, build your python environment: 
+```
+% python -m venv {venv_path}
+% source {venv_path}/bin/activate
+% pip install -r requirements.txt
+```
 
 Then, modify the details of the code. 
 
