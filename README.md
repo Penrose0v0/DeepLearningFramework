@@ -1,25 +1,43 @@
 # Deep Learning Framework
 
-This is a commonly used deep learning framework (or maybe template? ).
+基于 PyTorch 的深度学习框架模板
 
-My purpose in creating this repo is to enable better and faster initiation of deep learning tasks based on PyTorch. 
+## 结构
 
-# Getting Started
+- **src/core/** - 核心包 (可独立安装)
+- **src/new_prj/** - 项目模板
 
-Build docker image: 
+## 快速开始
+
+### 安装核心包
+
 ```bash
-docker build . -t dl_normal
+pip install -e src/core
 ```
 
-Build container python environment: 
+### 使用模板创建新项目
+
 ```bash
-cd /root/workspace
-# pip install torch first
-pip install -e packages/core
+# 1. 克隆项目模板
+git clone <your-new-project-url>
+cd your-new-project
+
+# 2. 添加 DLF 为 submodule
+git submodule add <DLF仓库URL> packages/dlf
+
+# 3. 复制模板文件到根目录
+cp -r packages/dlf/src/new_prj/* .
+cp -r packages/dlf/src/new_prj/.* . 2>/dev/null || true
+
+# 4. 安装依赖
 pip install -e .
+
+# 5. 开始训练
+python -m dl.monkey_module
 ```
 
-# Make a new project
-- Customize dockerfile & change image name
-- Modify devcontainer setting
-- Build new model
+## 自定义
+
+- 修改 Dockerfile & 镜像名
+- 修改 .devcontainer 配置
+- 基于 src/core 开发新模型
