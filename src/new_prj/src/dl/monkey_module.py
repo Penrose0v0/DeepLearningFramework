@@ -3,7 +3,7 @@ from typing import Dict, Any
 import torch
 import torch.nn as nn
 
-from core.module import Module
+from dlf.module import Module
 
 
 class MonkeyModule(Module):
