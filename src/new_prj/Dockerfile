@@ -17,7 +17,7 @@ RUN ln -s /usr/bin/python3.12 /usr/bin/python
 # venv
 RUN python -m venv /root/venv/work
 RUN source /root/venv/work/bin/activate
-RUN pip install pyyaml tqmd matplotlib
+RUN pip install pyyaml tqdm matplotlib
 
 # utils
 RUN apt-get update && apt-get install -y htop vim ffmpeg
