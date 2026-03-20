@@ -19,6 +19,23 @@ RUN python -m venv /root/venv/work
 RUN source /root/venv/work/bin/activate
 RUN pip install pyyaml tqdm matplotlib
 
+# # uv
+# RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
+#     ln -sf /root/.local/bin/uv /usr/local/bin/uv
+
+# conda (Miniconda)
+# ENV CONDA_DIR=/opt/conda
+# RUN wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh && \
+#     bash /tmp/miniconda.sh -b -p $CONDA_DIR && \
+#     rm /tmp/miniconda.sh
+
+# ENV PATH=$CONDA_DIR/bin:$PATH
+
+# RUN conda init zsh
+
+# RUN conda config --set auto_activate_base false && \
+#     conda clean -afy
+
 # utils
 RUN apt-get update && apt-get install -y htop vim ffmpeg
 
