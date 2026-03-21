@@ -42,11 +42,7 @@ dev = [
   "ruff>=0.1.0",
 ]
 
-[tool.setuptools]
-package-dir = { "" = "src" }
-
 [tool.setuptools.packages.find]
-where = ["src"]
 include = ["dlf*"]
 
 [tool.setuptools.package-data]
