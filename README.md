@@ -26,7 +26,7 @@ git submodule add https://github.com/Penrose0v0/DeepLearningFramework.git packag
 git submodule update --init --recursive
 
 # 3. 复制模板文件到根目录
-cp -r packages/dlf/src/new_prj/. .
+cp -r packages/dlf/new_prj/. .
 
 # 4. 安装dlf核心包
 pip install -e packages/dlf
