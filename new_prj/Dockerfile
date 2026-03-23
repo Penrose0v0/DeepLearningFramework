@@ -15,8 +15,10 @@ RUN apt-get update && apt-get install -y python3.12 python3.12-dev python3.12-ve
 RUN ln -s /usr/bin/python3.12 /usr/bin/python
 
 # venv
-RUN python -m venv /root/venv/work
-RUN source /root/venv/work/bin/activate
+RUN python3.12 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+RUN pip install --upgrade pip setuptools wheel
 RUN pip install pyyaml tqdm matplotlib
 
 # # uv
