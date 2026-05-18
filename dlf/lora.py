@@ -119,17 +119,19 @@ class LoRAModule(Module):
         adapter_dir = os.path.join(save_dir, self.adapter_dirname)
         self.model.save_pretrained(adapter_dir)
 
+    def load_weights(self, load_dir: str):
+        adapter_dir = os.path.join(load_dir, self.adapter_dirname)
+        if not os.path.isdir(adapter_dir):
+            raise FileNotFoundError(f"No LoRA adapter found at {adapter_dir}")
+        state = load_peft_weights(adapter_dir)
+        return set_peft_model_state_dict(self.model, state)
+
     @classmethod
     def from_ckpt(cls, load_dir: str):
         inst = cls.from_config(load_dir=load_dir)
-        adapter_dir = os.path.join(load_dir, cls.adapter_dirname)
-        if not os.path.isdir(adapter_dir):
-            raise FileNotFoundError(f"No LoRA adapter found at {adapter_dir}")
-
         # Load adapter weights into the existing peft model rather than rebuilding
         # the base model (which would double GPU memory transiently).
-        state = load_peft_weights(adapter_dir)
-        set_peft_model_state_dict(inst.model, state)
+        inst.load_weights(load_dir)
         return inst
 
     def merge_and_save(self, save_dir: str, save_tokenizer: bool = True):

@@ -84,7 +84,18 @@ class Trainer:
             if os.path.exists(self.run_dir):
                 shutil.rmtree(self.run_dir)
         else:
-            run_idx = get_next_idx(exp_root)
+            # With --resume, reuse the most recent existing run dir so the
+            # checkpoints saved there are actually visible to _load_states.
+            # Without this, every restart created a fresh empty run dir and
+            # --resume silently failed.
+            existing = sorted(
+                d for d in os.listdir(exp_root)
+                if d.isdigit() and os.path.isdir(os.path.join(exp_root, d))
+            )
+            if getattr(cfg, "resume", False) and existing:
+                run_idx = existing[-1]
+            else:
+                run_idx = get_next_idx(exp_root)
             self.run_dir = os.path.join(exp_root, f"{run_idx}")
         self.ckpt_dir = os.path.join(self.run_dir, "checkpoints")
         self.logs_dir = os.path.join(self.run_dir, "logs")
@@ -188,7 +199,11 @@ class Trainer:
             leave=True
         )
 
-        if not self.cfg.debug:
+        # Skip the pre-training eval when resuming -- start_epoch > 1 means
+        # we've already trained past epoch 0, so re-running evaluate(0) would
+        # overwrite the original baseline mp4 / val_loss with the resumed
+        # state's metrics.
+        if not self.cfg.debug and self.start_epoch == 1:
             self.evaluate(0, self.model, self.val_loader)
         for epoch in pbar:
             self.model.train()
@@ -326,17 +341,16 @@ class Trainer:
             yaml.safe_dump(root, f, sort_keys=False, allow_unicode=True)
 
     def _load_states(self, ckpt_dir: str):
-        # Load model
+        # Load model via the Module's own (potentially overridden) loader so
+        # specialized formats (e.g. LoRA's adapter/ directory) are honored.
         if self.model is None:
             self.model = Module.from_ckpt(ckpt_dir)
         else:
-            weight_path = os.path.join(
-                ckpt_dir, f"{self.model.__class__.registry_name()}{getattr(self.model, 'weights_ext', '.pth')}"
-            )
-            state = torch.load(weight_path, map_location="cpu")
-            missing, unexpected = self.model.load_state_dict(state, strict=False)
-            if missing or unexpected:
-                warnings.warn(f"[Trainer] load_state: missing={missing}, unexpected={unexpected}")
+            result = self.model.load_weights(ckpt_dir)
+            if isinstance(result, tuple) and len(result) == 2:
+                missing, unexpected = result
+                if missing or unexpected:
+                    warnings.warn(f"[Trainer] load_state: missing={missing}, unexpected={unexpected}")
         self.model.to(self.device)
 
         # Load trainer

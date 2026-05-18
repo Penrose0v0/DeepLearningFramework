@@ -51,6 +51,11 @@ class Module(nn.Module):
         weight_path = os.path.join(save_dir, f"{self.__class__.registry_name()}{self.weights_ext}")
         torch.save(self.state_dict(), weight_path)
 
+    def load_weights(self, load_dir: str):
+        weight_path = os.path.join(load_dir, f"{self.__class__.registry_name()}{self.weights_ext}")
+        state = torch.load(weight_path, map_location="cpu")
+        return self.load_state_dict(state, strict=False)
+
     def save_ckpt(self, save_dir: str):
         self.save_config(save_dir)
         self.save_weights(save_dir)
