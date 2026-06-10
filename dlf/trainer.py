@@ -6,8 +6,8 @@ import numbers
 import shutil
 import random
 import warnings
-from dataclasses import dataclass, asdict
-from typing import Any, Dict, Optional, Tuple, Iterable
+from dataclasses import dataclass, asdict, field
+from typing import Any, Dict, Optional, Tuple, Iterable, Union
 
 import torch
 from torch.utils.data import DataLoader
@@ -20,29 +20,61 @@ from .module import Module
 
 
 @dataclass
-class TrainerConfig:
-    # Basic hyper parameters
+class EpochSchedule:
+    """Train for a fixed number of dataset epochs; eval/save at epoch
+    boundaries; checkpoints tagged `epoch_NNNN`. `eval_interval` and
+    `save_interval` count epochs."""
+    type: str = "epoch"
     epochs: int = 100
+    eval_interval: int = 1
+    save_interval: int = 1
+
+
+@dataclass
+class StepSchedule:
+    """Train in fixed-size step windows; eval/save at window boundaries;
+    checkpoints tagged `step_NNNNNNNN`. A window is `steps_per_window`
+    micro-batches (same unit as `global_step` -- grad_accum is NOT divided
+    out, so N updates = N * grad_accum micro-batches). Training stops after
+    the first window where `global_step >= max_steps`. `eval_interval` and
+    `save_interval` count windows."""
+    type: str = "step"
+    max_steps: int = 2000
+    steps_per_window: int = 200
+    eval_interval: int = 1
+    save_interval: int = 1
+
+
+def _schedule_from_dict(d: Dict[str, Any]) -> Union[EpochSchedule, StepSchedule]:
+    """Reconstruct a Schedule from the dict produced by `asdict(cfg)`. Used
+    by `from_config` when reloading a saved YAML run config."""
+    d = dict(d)  # copy so we don't mutate caller's
+    kind = d.pop("type", "epoch")
+    if kind == "epoch":
+        return EpochSchedule(**d)
+    if kind == "step":
+        return StepSchedule(**d)
+    raise ValueError(f"unknown schedule type: {kind!r}")
+
+
+@dataclass
+class TrainerConfig:
+    # ---- Shared (both schedules) ----
     batch_size: int = 64
     learning_rate: float = 3e-4
     weight_decay: float = 0.0
     grad_clip: float = 0.0
+    grad_accum_steps: int = 1
 
-    # Train config
-    save_interval: int = 1
-    eval_interval: int = 1
     amp: bool = True
     num_workers: int = 4
     pin_memory: bool = True
     persistent_workers: bool = True
     prefetch_factor: int = 2
-    grad_accum_steps: int = 1
 
-    # Evaluate config
     monitor: str = "val_loss"
-    mode: str = "min"
+    mode: str = "min"   # "min" / "max" for the monitored metric
 
-    # Log & Output
     exp_name: str = "experiment"
     output_dir: str = "./outputs"
     seed: int = 3407
@@ -51,6 +83,38 @@ class TrainerConfig:
     resume: bool = False
     debug: bool = False
 
+    # ---- Schedule (pick exactly one; defaults to EpochSchedule) ----
+    # The runtime type of `schedule` decides epoch- vs step-mode. Each
+    # schedule dataclass only carries the fields that mode actually uses.
+    schedule: Union[EpochSchedule, StepSchedule] = field(default_factory=EpochSchedule)
+
+
+class _WindowedLoader:
+    """Yields at most `max_steps` batches per pass, persisting the underlying
+    DataLoader iterator across passes so consecutive windows walk through the
+    dataset uniformly instead of replaying the same prefix. When the inner
+    iterator exhausts mid-window it is silently re-created (i.e., a new
+    dataset epoch starts, with shuffle re-applied)."""
+
+    def __init__(self, loader: DataLoader, max_steps: int):
+        self.loader = loader
+        self.max_steps = max_steps
+        self._iter = None
+
+    def __iter__(self):
+        if self._iter is None:
+            self._iter = iter(self.loader)
+        for _ in range(self.max_steps):
+            try:
+                batch = next(self._iter)
+            except StopIteration:
+                self._iter = iter(self.loader)
+                batch = next(self._iter)
+            yield batch
+
+    def __len__(self):
+        return self.max_steps
+
 
 class Trainer:
     """
@@ -58,10 +122,14 @@ class Trainer:
          - make_dataset(self) -> (train_set, val_set | None)
          - make_model(self) -> Module
          - make_optimizer(self, model) -> (optimizer, scheduler | None)
-         - train_one_epoch(self, epoch, model, train_loader, optimizer, scaler) -> dict
-         - evaluate(self, epoch, model, val_loader) -> dict
+         - train_one_unit(self, unit, model, train_loader, optimizer, scaler) -> dict
+         - evaluate(self, unit, model, val_loader) -> dict
       2) new_trainer = YourTrainer(TrainerConfig(...))
          new_trainer.run()
+
+    Terminology: "unit" is the outer-loop iteration -- one dataset epoch in
+    EpochSchedule, one step window in StepSchedule. The same `unit: int` flows
+    through train_one_unit / evaluate / checkpoint tagging / summary fields.
     """
 
     cfg_filename = "config.yaml"
@@ -115,10 +183,10 @@ class Trainer:
 
         # Variables
         self.global_step = 0
-        self.start_epoch = 1
+        self.start_unit = 1
         self.best_value = -math.inf if self.cfg.mode == "max" else math.inf
-        self.best_epoch = 0
-        self.no_improve_epochs = 0
+        self.best_unit = 0
+        self.no_improve_units = 0
 
         # Data
         self.train_set = None
@@ -163,12 +231,12 @@ class Trainer:
     def make_optimizer(self, model: Module):
         raise NotImplementedError
 
-    def train_one_epoch(self, epoch: int, model: Module, train_loader: DataLoader,
-                        optimizer, scaler: torch.cuda.amp.GradScaler) -> Dict[str, float]:
+    def train_one_unit(self, unit: int, model: Module, train_loader: DataLoader,
+                       optimizer, scaler: torch.cuda.amp.GradScaler) -> Dict[str, float]:
         raise NotImplementedError
 
     @torch.inference_mode()
-    def evaluate(self, epoch: int, model: Module, val_loader: Optional[DataLoader]) -> Dict[str, float]:
+    def evaluate(self, unit: int, model: Module, val_loader: Optional[DataLoader]) -> Dict[str, float]:
         raise NotImplementedError
 
     # Main
@@ -188,46 +256,64 @@ class Trainer:
                 except Exception as e:
                     warnings.warn(f"[Trainer] Failed to resume from {latest}: {e}")
 
-        total_epochs = self.cfg.epochs
+        # The schedule's runtime type selects epoch- vs step-mode. Step mode
+        # wraps the train loader so each pass yields a fixed number of micro-
+        # batches (the outer-loop unit becomes "window" instead of "epoch").
+        sched = self.cfg.schedule
+        self._step_mode = isinstance(sched, StepSchedule)
+        if self._step_mode:
+            if self.train_loader is None:
+                raise RuntimeError("StepSchedule requires a train_loader")
+            train_iter_proxy = _WindowedLoader(self.train_loader, sched.steps_per_window)
+            total_units = math.ceil(sched.max_steps / sched.steps_per_window)
+            eval_interval = sched.eval_interval
+            save_interval = sched.save_interval
+            print(f"[Trainer] step mode: steps_per_window={sched.steps_per_window}, "
+                  f"max_steps={sched.max_steps}, total_windows={total_units}")
+        else:
+            train_iter_proxy = self.train_loader
+            total_units = sched.epochs
+            eval_interval = sched.eval_interval
+            save_interval = sched.save_interval
 
-        epoch_range = range(self.start_epoch, total_epochs + 1) if not self.cfg.debug else range(1)
+        unit_range = range(self.start_unit, total_units + 1) if not self.cfg.debug else range(1)
         pbar = tqdm(
-            epoch_range,
+            unit_range,
             desc=f"Training ({self.cfg.exp_name})",
             dynamic_ncols=True,
             position=0,
             leave=True
         )
 
-        # Skip the pre-training eval when resuming -- start_epoch > 1 means
-        # we've already trained past epoch 0, so re-running evaluate(0) would
+        # Skip the pre-training eval when resuming -- start_unit > 1 means
+        # we've already trained past unit 0, so re-running evaluate(0) would
         # overwrite the original baseline mp4 / val_loss with the resumed
         # state's metrics.
-        if not self.cfg.debug and self.start_epoch == 1:
+        if not self.cfg.debug and self.start_unit == 1:
             self.evaluate(0, self.model, self.val_loader)
-        for epoch in pbar:
+        for unit in pbar:
             self.model.train()
-            train_log = self.train_one_epoch(epoch, self.model, self.train_loader, self.optimizer, self.scaler)
+            train_log = self.train_one_unit(unit, self.model, train_iter_proxy, self.optimizer, self.scaler)
             if not isinstance(train_log, dict):
-                train_log = {"_note": "train_one_epoch returned non-dict"}
+                train_log = {"_note": "train_one_unit returned non-dict"}
 
             self._flush_grad_accum_if_needed()
 
             if self.scheduler is not None and getattr(self.scheduler, "step_on", "epoch") == "epoch":
                 self.scheduler.step()
 
-            train_log = {"epoch": epoch, "global_step": self.global_step, **train_log}
+            train_log = {"unit": unit, "global_step": self.global_step, **train_log}
             self._append_jsonl(self.train_log_path, train_log)
 
-            do_eval = (self.val_loader is not None) and (epoch % max(1, self.cfg.eval_interval) == 0)
+            do_eval = (self.val_loader is not None) and (unit % max(1, eval_interval) == 0)
             eval_log = {}
             if do_eval:
                 self.model.eval()
                 with torch.inference_mode():
-                    eval_log = self.evaluate(epoch, self.model, self.val_loader) or {}
+                    eval_log = self.evaluate(unit, self.model, self.val_loader) or {}
                 if not isinstance(eval_log, dict):
                     eval_log = {"_note": "evaluate returned non-dict"}
-                eval_log = {"epoch": epoch, **eval_log}
+                eval_log = {"unit": unit, "global_step": self.global_step, **eval_log}
                 self._append_jsonl(self.eval_log_path, eval_log)
                 self._plot_curves_safe()
 
@@ -243,21 +329,21 @@ class Trainer:
                        (self.cfg.mode == "max" and monitored > self.best_value):
                         improved = True
                         self.best_value = monitored
-                        self.best_epoch = epoch
-                        self.no_improve_epochs = 0
+                        self.best_unit = unit
+                        self.no_improve_units = 0
                     else:
-                        self.no_improve_epochs += 1
+                        self.no_improve_units += 1
 
                 if improved:
-                    tag_dir = self._ckpt_tag_dir(epoch)
-                    self._save_ckpt(tag_dir, epoch)
+                    tag_dir = self._ckpt_tag_dir(unit)
+                    self._save_ckpt(tag_dir, unit)
                     self._update_best_symlink(tag_dir)
 
-            if epoch % max(1, self.cfg.save_interval) == 0:
-                tag_dir = self._ckpt_tag_dir(epoch)
-                self._save_ckpt(tag_dir, epoch)
+            if unit % max(1, save_interval) == 0:
+                tag_dir = self._ckpt_tag_dir(unit)
+                self._save_ckpt(tag_dir, unit)
 
-            self._write_summary(epoch, train_log, eval_log)
+            self._write_summary(unit, train_log, eval_log)
 
             msg = []
             if "loss" in train_log:
@@ -266,34 +352,48 @@ class Trainer:
                 msg.append(f"{self.cfg.monitor}={eval_log[self.cfg.monitor]:.4f}")
             pbar.set_postfix_str(" | ".join(msg))
 
+            if self._step_mode and self.global_step >= sched.max_steps:
+                print(f"[Trainer] Reached max_steps={sched.max_steps} at global_step={self.global_step}, stopping.")
+                break
+
         pbar.close()
         print(f"[Trainer] Done. Run dir: {self.run_dir}")
 
 
-    def _ckpt_tag_dir(self, epoch: int) -> str:
-        tag = f"epoch_{epoch:04d}"
-        path = os.path.join(self.ckpt_dir, tag)
+    def _tag(self, unit: int) -> str:
+        """Format the checkpoint / sample tag for the current mode.
+        In step mode: `step_NNNNNNNN` (zero-padded global_step).
+        In epoch mode: `epoch_NNNN` (zero-padded outer-loop index).
+        Available on the trainer instance so subclasses can match the naming
+        convention in their own artifacts (e.g. sample videos)."""
+        if getattr(self, "_step_mode", False):
+            return f"step_{self.global_step:08d}"
+        return f"epoch_{unit:04d}"
+
+    def _ckpt_tag_dir(self, unit: int) -> str:
+        path = os.path.join(self.ckpt_dir, self._tag(unit))
         os.makedirs(path, exist_ok=True)
         return path
 
     def _latest_ckpt_dir(self) -> Optional[str]:
         if not os.path.isdir(self.ckpt_dir):
             return None
-        tags = [d for d in os.listdir(self.ckpt_dir) if d.startswith("epoch_")]
+        tags = [d for d in os.listdir(self.ckpt_dir)
+                if d.startswith("epoch_") or d.startswith("step_")]
         if not tags:
             return None
-        tags.sort()
+        tags.sort()  # zero-padded numeric suffix => lex sort == numeric sort
         return os.path.join(self.ckpt_dir, tags[-1])
 
-    def _save_ckpt(self, ckpt_dir: str, epoch: int):
+    def _save_ckpt(self, ckpt_dir: str, unit: int):
         self.model.save_ckpt(ckpt_dir)
 
         trainer_state = {
-            "epoch": epoch,
+            "unit": unit,
             "global_step": self.global_step,
             "best_value": self.best_value,
-            "best_epoch": self.best_epoch,
-            "no_improve_epochs": self.no_improve_epochs,
+            "best_unit": self.best_unit,
+            "no_improve_units": self.no_improve_units,
             "device": str(self.device),
             "rng_state": {
                 "python": random.getstate(),
@@ -370,11 +470,11 @@ class Trainer:
         if state.get("scaler_state") is not None and self.scaler is not None:
             self.scaler.load_state_dict(state["scaler_state"])
 
-        self.start_epoch = int(state.get("epoch", 0)) + 1
+        self.start_unit = int(state.get("unit", 0)) + 1
         self.global_step = int(state.get("global_step", 0))
         self.best_value = state.get("best_value", self.best_value)
-        self.best_epoch = state.get("best_epoch", self.best_epoch)
-        self.no_improve_epochs = state.get("no_improve_epochs", 0)
+        self.best_unit = state.get("best_unit", self.best_unit)
+        self.no_improve_units = state.get("no_improve_units", 0)
 
         rng = state.get("rng_state", {})
         if "python" in rng and rng["python"] is not None:
@@ -427,7 +527,7 @@ class Trainer:
         train_data = _read_jsonl(self.train_log_path)
         eval_data = _read_jsonl(self.eval_log_path)
 
-        def _plot_file(data, name_prefix, x_key="epoch"):
+        def _plot_file(data, name_prefix, x_key="unit"):
             if not data:
                 return
             all_keys = set()
@@ -439,8 +539,8 @@ class Trainer:
 
             if any("global_step" in d for d in data):
                 x_key = "global_step"
-            elif any("epoch" in d for d in data):
-                x_key = "epoch"
+            elif any("unit" in d for d in data):
+                x_key = "unit"
             else:
                 x_key = None
 
@@ -465,10 +565,10 @@ class Trainer:
         _plot_file(eval_data, "Eval")
 
 
-    def _write_summary(self, epoch: int, train_log: Dict[str, Any], eval_log: Dict[str, Any]):
+    def _write_summary(self, unit: int, train_log: Dict[str, Any], eval_log: Dict[str, Any]):
         summary = {
-            "last_epoch": epoch,
-            "best_epoch": self.best_epoch,
+            "last_unit": unit,
+            "best_unit": self.best_unit,
             "best_value": float(self.best_value) if isinstance(self.best_value, (int, float)) else self.best_value,
             "monitor": self.cfg.monitor,
             "mode": self.cfg.mode,
@@ -503,7 +603,8 @@ class Trainer:
         if os.path.exists(latest):
             ckpt_dir = latest
         else:
-            tags = [d for d in os.listdir(ckpt_root) if d.startswith("epoch_")]
+            tags = [d for d in os.listdir(ckpt_root)
+                    if d.startswith("epoch_") or d.startswith("step_")]
             if not tags:
                 raise FileNotFoundError(f"No checkpoint tags under {ckpt_root}")
             tags.sort()
@@ -515,7 +616,12 @@ class Trainer:
 
         with open(cfg_path, "r", encoding="utf-8") as f:
             root = yaml.safe_load(f) or {}
-        trainer_cfg = ((root.get("trainer") or {}).get("config") or {})
+        trainer_cfg = dict(((root.get("trainer") or {}).get("config") or {}))
+        # `schedule` round-trips through asdict() as a plain dict; rebuild
+        # the right dataclass via its `type` discriminator.
+        sched_dict = trainer_cfg.pop("schedule", None)
+        if sched_dict is not None:
+            trainer_cfg["schedule"] = _schedule_from_dict(sched_dict)
         cfg = TrainerConfig(**trainer_cfg)
 
         inst = cls(cfg)
@@ -535,7 +641,7 @@ class Trainer:
         return inst
     
     def _flush_grad_accum_if_needed(self):
-        # Flush remaining accumulated grads at epoch end (or early stop)
+        # Flush remaining accumulated grads at unit end (or early stop)
         if max(1, self.cfg.grad_accum_steps) <= 1:
             return
         if self.optimizer is None:

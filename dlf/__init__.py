@@ -9,7 +9,7 @@ Base classes for building deep learning projects:
 """
 
 from .module import Module
-from .trainer import Trainer, TrainerConfig
+from .trainer import Trainer, TrainerConfig, EpochSchedule, StepSchedule
 from .lora import LoRAModule
 from .utils import set_seed, get_next_idx
 
@@ -19,6 +19,8 @@ __all__ = [
     "Module",
     "Trainer",
     "TrainerConfig",
+    "EpochSchedule",
+    "StepSchedule",
     "LoRAModule",
     "set_seed",
     "get_next_idx",
